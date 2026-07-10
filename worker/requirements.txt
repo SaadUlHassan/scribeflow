@@ -1,2 +1,4 @@
 aio-pika==9.5.5
+asyncpg==0.31.0
+faster-whisper==1.2.1
 pydantic-settings==2.10.1

@@ -93,14 +93,32 @@ export class PublisherService implements OnModuleInit, OnModuleDestroy {
         void this.reconnectForever();
       }
     });
+    // Without listeners, EventEmitter 'error' events crash the process.
     connection.on('error', (err: Error) => {
       this.logger.error(`rabbitmq connection error: ${err.message}`);
     });
 
-    const channel = await connection.createConfirmChannel();
-    await assertTopology(channel);
-    this.connection = connection;
-    this.channel = channel;
+    try {
+      const channel = await connection.createConfirmChannel();
+      channel.on('error', (err: Error) => {
+        this.logger.error(`rabbitmq channel error: ${err.message}`);
+      });
+      // A channel can die while the connection stays up (e.g. broker-side
+      // precondition failure). Recycle the whole connection so the close
+      // handler above drives a single reconnect path.
+      channel.on('close', () => {
+        if (!this.shuttingDown && this.channel === channel) {
+          this.channel = null;
+          void connection.close().catch(() => undefined);
+        }
+      });
+      await assertTopology(channel);
+      this.connection = connection;
+      this.channel = channel;
+    } catch (err) {
+      await connection.close().catch(() => undefined);
+      throw err;
+    }
   }
 
   private async reconnectForever(): Promise<void> {

@@ -1,27 +1,33 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'crypto';
 import { createReadStream } from 'fs';
-import { mkdir, rename, unlink } from 'fs/promises';
+import { mkdir, readdir, rename, unlink } from 'fs/promises';
 import { join } from 'path';
 import { pipeline } from 'stream/promises';
 import { EnvironmentVariables } from '../config/env.validation';
 
+/** Uploads land here first; same volume as audioDir so promotion is an atomic rename. */
+export function uploadTempDir(audioDir: string): string {
+  return join(audioDir, 'tmp');
+}
+
 @Injectable()
 export class StorageService implements OnModuleInit {
+  private readonly logger = new Logger(StorageService.name);
   private readonly audioDir: string;
 
   constructor(config: ConfigService<EnvironmentVariables, true>) {
     this.audioDir = config.get('AUDIO_DIR', { infer: true });
   }
 
-  async onModuleInit(): Promise<void> {
-    await mkdir(this.tempDir, { recursive: true });
+  get tempDir(): string {
+    return uploadTempDir(this.audioDir);
   }
 
-  /** Uploads land here first; same volume as audioDir so promotion is an atomic rename. */
-  get tempDir(): string {
-    return join(this.audioDir, 'tmp');
+  async onModuleInit(): Promise<void> {
+    await mkdir(this.tempDir, { recursive: true });
+    await this.purgeStaleTempFiles();
   }
 
   async sha256(filePath: string): Promise<string> {
@@ -39,5 +45,14 @@ export class StorageService implements OnModuleInit {
 
   async remove(filePath: string): Promise<void> {
     await unlink(filePath).catch(() => undefined); // best-effort cleanup
+  }
+
+  /** Temp files orphaned by a crash mid-request; safe to clear during init. */
+  private async purgeStaleTempFiles(): Promise<void> {
+    const entries = await readdir(this.tempDir).catch(() => []);
+    if (entries.length > 0) {
+      this.logger.warn(`purging ${entries.length} stale temp upload(s)`);
+      await Promise.all(entries.map((e) => this.remove(join(this.tempDir, e))));
+    }
   }
 }

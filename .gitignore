@@ -1,0 +1,27 @@
+# Node
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Environment
+.env
+.env.local
+
+# Runtime data
+data/
+
+# ML model cache
+.cache/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

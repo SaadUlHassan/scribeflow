@@ -15,6 +15,7 @@ import functools
 import json
 import signal
 import tempfile
+import uuid
 from pathlib import Path
 
 import aio_pika
@@ -25,13 +26,16 @@ import transcriber
 from db import Database
 from log import configure_logging, get_logger
 from queue_topology import ROUTING_KEY_DEAD, ROUTING_KEY_RETRY, Topology, declare_topology
-from retry import Retry, decide
+from retry import MAX_RETRIES, Retry, decide
 from settings import Settings, load_settings
 
 logger = get_logger("worker")
 
 PROGRESS_REPORT_STEP = 0.1
 RETRY_COUNT_HEADER = "x-retry-count"
+# Throttles nack(requeue=True) cycles so a persistent infra failure cannot
+# spin the prefetch-1 worker in a hot redelivery loop.
+TRANSIENT_NACK_DELAY_SEC = 5.0
 
 
 async def connect_with_retry(settings: Settings) -> AbstractRobustConnection:
@@ -96,7 +100,11 @@ async def handle_failure(
 ) -> None:
     """Route a handled failure: TTL retry queue while attempts remain, DLQ after."""
     headers = dict(message.headers or {})
-    retry_count = int(headers.get(RETRY_COUNT_HEADER, 0))
+    try:
+        retry_count = int(headers.get(RETRY_COUNT_HEADER, 0))
+    except (TypeError, ValueError):
+        # Corrupted header: dead-letter rather than risk endless retries.
+        retry_count = MAX_RETRIES
     decision = decide(retry_count)
 
     try:
@@ -129,6 +137,7 @@ async def handle_failure(
         await message.ack()
     except Exception:
         logger.exception("could not handle failure jobId=%s", job_id)
+        await asyncio.sleep(TRANSIENT_NACK_DELAY_SEC)
         await message.nack(requeue=True)  # let redelivery retry the whole job
 
 
@@ -140,9 +149,10 @@ async def handle_message(
 ) -> None:
     try:
         payload = json.loads(message.body)
-        job_id: str = payload["jobId"]
-        file_path: str = payload["filePath"]
-    except (json.JSONDecodeError, KeyError, TypeError):
+        job_id = str(payload["jobId"])
+        uuid.UUID(job_id)  # poison guard: DB lookups need a valid uuid
+        file_path = str(payload["filePath"])
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         logger.error("malformed message, parking in DLQ body=%r", message.body[:200])
         await message.nack(requeue=False)
         return
@@ -150,8 +160,11 @@ async def handle_message(
     try:
         status = await db.get_status(job_id)
     except Exception as exc:
-        logger.error("could not read job status jobId=%s: %s", job_id, exc)
-        await message.nack(requeue=False)
+        # Transient infra failure (jobId is a valid uuid, so not poison):
+        # throttled requeue self-heals once the database is back.
+        logger.warning("could not read job status jobId=%s, requeueing: %s", job_id, exc)
+        await asyncio.sleep(TRANSIENT_NACK_DELAY_SEC)
+        await message.nack(requeue=True)
         return
 
     if status is None:
@@ -228,7 +241,12 @@ async def run() -> None:
 
 def main() -> None:
     configure_logging()
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        # Only reachable before the loop's signal handlers are installed
+        # (e.g. Ctrl-C during a startup retry loop).
+        logger.info("interrupted during startup, exiting")
 
 
 if __name__ == "__main__":

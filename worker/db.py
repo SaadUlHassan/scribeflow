@@ -55,8 +55,13 @@ class Database:
         )
 
     async def update_progress(self, job_id: str, progress: float) -> None:
+        # Guarded by status: progress writes are fire-and-forget from the
+        # pipeline thread and must never clobber a completed/failed row.
         await self.pool.execute(
-            "UPDATE jobs SET progress = $2, updated_at = now() WHERE id = $1",
+            """
+            UPDATE jobs SET progress = $2, updated_at = now()
+            WHERE id = $1 AND status = 'processing'
+            """,
             job_id,
             progress,
         )

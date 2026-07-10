@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from audio import AudioProcessingError, normalize, probe
+from audio import AudioProcessingError, _run, normalize, probe
 
 
 def ffprobe_stream(path: Path) -> dict:
@@ -49,3 +49,8 @@ def test_normalize_produces_16khz_mono_s16(tone_wav, tmp_path):
 def test_normalize_rejects_garbage(garbage_file, tmp_path):
     with pytest.raises(AudioProcessingError):
         normalize(garbage_file, tmp_path)
+
+
+def test_run_maps_timeout_to_typed_error():
+    with pytest.raises(AudioProcessingError, match="timed out"):
+        _run(["sleep", "5"], timeout_sec=1)

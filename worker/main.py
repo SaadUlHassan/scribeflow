@@ -6,6 +6,7 @@ M3 failure handling marks the job failed; retry/backoff lands in M4.
 """
 
 import asyncio
+import concurrent.futures
 import functools
 import json
 import tempfile
@@ -62,13 +63,19 @@ def make_progress_reporter(
     """Throttled, fire-and-forget progress writes, callable from the pipeline thread."""
     last_reported = 0.0
 
+    def log_failure(future: "concurrent.futures.Future[None]") -> None:
+        exc = future.exception()
+        if exc is not None:
+            logger.warning("progress update failed jobId=%s: %s", job_id, exc)
+
     def report(fraction: float) -> None:
         nonlocal last_reported
         if fraction - last_reported >= PROGRESS_REPORT_STEP:
             last_reported = fraction
-            asyncio.run_coroutine_threadsafe(
+            future = asyncio.run_coroutine_threadsafe(
                 db.update_progress(job_id, round(fraction, 2)), loop
             )
+            future.add_done_callback(log_failure)
 
     return report
 

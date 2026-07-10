@@ -8,15 +8,25 @@ import subprocess
 from pathlib import Path
 
 STDERR_TAIL_CHARS = 400
+# Timeouts keep a hung ffmpeg/ffprobe from deadlocking the prefetch-1 worker.
+PROBE_TIMEOUT_SEC = 60
+NORMALIZE_TIMEOUT_SEC = 600
 
 
 class AudioProcessingError(Exception):
     """Raised for invalid audio input or ffmpeg failure; message goes to jobs.error."""
 
 
+def _run(cmd: list[str], timeout_sec: int) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+    except subprocess.TimeoutExpired as exc:
+        raise AudioProcessingError(f"{cmd[0]} timed out after {timeout_sec}s") from exc
+
+
 def probe(path: str | Path) -> float:
     """Validate that the file has an audio stream and return its duration in seconds."""
-    result = subprocess.run(
+    result = _run(
         [
             "ffprobe",
             "-v", "error",
@@ -25,8 +35,7 @@ def probe(path: str | Path) -> float:
             "-show_streams",
             str(path),
         ],
-        capture_output=True,
-        text=True,
+        PROBE_TIMEOUT_SEC,
     )
     if result.returncode != 0:
         raise AudioProcessingError(f"ffprobe rejected the file: {_tail(result.stderr)}")
@@ -45,7 +54,7 @@ def probe(path: str | Path) -> float:
 def normalize(src: str | Path, out_dir: Path) -> Path:
     """Convert any input to the canonical 16 kHz mono 16-bit PCM WAV."""
     out_path = out_dir / "normalized.wav"
-    result = subprocess.run(
+    result = _run(
         [
             "ffmpeg",
             "-y",
@@ -56,8 +65,7 @@ def normalize(src: str | Path, out_dir: Path) -> Path:
             "-sample_fmt", "s16",
             str(out_path),
         ],
-        capture_output=True,
-        text=True,
+        NORMALIZE_TIMEOUT_SEC,
     )
     if result.returncode != 0:
         raise AudioProcessingError(f"ffmpeg normalization failed: {_tail(result.stderr)}")

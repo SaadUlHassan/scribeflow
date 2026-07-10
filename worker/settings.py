@@ -22,6 +22,9 @@ class Settings(BaseSettings):
 
     startup_retry_max: int = 30
     startup_retry_delay_sec: float = 2.0
+    # On SIGTERM, wait this long for the in-flight job before letting the
+    # broker redeliver it; compose stop_grace_period must exceed this.
+    shutdown_grace_sec: float = 55.0
 
 
 def load_settings() -> Settings:

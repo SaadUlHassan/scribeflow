@@ -6,6 +6,7 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { validateEnv } from './../src/config/env.validation';
 import { HealthController } from './../src/health/health.controller';
+import { PublisherService } from './../src/queue/publisher.service';
 
 // Hermetic e2e: health over real HTTP with a stubbed DataSource, no Postgres.
 describe('Health (e2e)', () => {
@@ -22,6 +23,7 @@ describe('Health (e2e)', () => {
           provide: getDataSourceToken(),
           useValue: { query: () => Promise.resolve([{ '?column?': 1 }]) },
         },
+        { provide: PublisherService, useValue: { isConnected: true } },
       ],
     }).compile();
 

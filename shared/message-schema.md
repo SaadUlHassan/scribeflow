@@ -41,4 +41,28 @@ Queue: transcription.dead   ← bind scribeflow.dlx / rk "dead"
   (parked messages for manual inspection; no consumer)
 ```
 
-Retry semantics (header `x-retry-count`) are implemented in milestone M4 and will be documented here when they land.
+## Retry semantics
+
+The worker uses **manual acks** with `prefetch_count = 1` and acks only after
+the result is committed to Postgres.
+
+On a handled failure the worker reads the `x-retry-count` header (default 0):
+
+| `x-retry-count` | Action |
+|---|---|
+| 0 | republish to `transcription.retry` with per-message TTL **10s**, header → 1, ack original |
+| 1 | republish with TTL **30s**, header → 2, ack original |
+| 2 | republish with TTL **90s**, header → 3, ack original |
+| ≥ 3 | publish copy to `transcription.dead`, set job `status=failed` + `error`, ack |
+
+Expired retry messages dead-letter back into `transcription.jobs` and are
+consumed again. `jobs.attempts` counts processing attempts (incremented each
+time the worker starts a job, including crash redeliveries).
+
+**Crash recovery:** if the worker dies before acking, the broker redelivers
+the message automatically. Processing is idempotent — a job whose status is
+already `completed` is acked and skipped on redelivery.
+
+**Known limitation:** per-message TTL on a single retry queue is subject to
+head-of-line blocking (a message behind a longer-TTL head expires late).
+Acceptable at this scale; a fixed-TTL-per-queue layout would remove it.

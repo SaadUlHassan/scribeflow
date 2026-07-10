@@ -49,8 +49,14 @@ class Database:
         return await self.pool.fetchval("SELECT status FROM jobs WHERE id = $1", job_id)
 
     async def mark_processing(self, job_id: str) -> None:
+        """Each call is one processing attempt (including crash redeliveries)."""
         await self.pool.execute(
-            "UPDATE jobs SET status = 'processing', updated_at = now() WHERE id = $1",
+            """
+            UPDATE jobs
+            SET status = 'processing', attempts = attempts + 1, progress = 0,
+                updated_at = now()
+            WHERE id = $1
+            """,
             job_id,
         )
 
@@ -83,6 +89,15 @@ class Database:
             json.dumps(transcript),
             transcript["language"],
             transcript["duration"],
+        )
+
+    async def record_retry(self, job_id: str, error: str) -> None:
+        """Back to queued while the message waits in the retry queue; error kept
+        for debugging (the API only exposes it once the job is failed)."""
+        await self.pool.execute(
+            "UPDATE jobs SET status = 'queued', error = $2, updated_at = now() WHERE id = $1",
+            job_id,
+            error,
         )
 
     async def fail(self, job_id: str, error: str) -> None:

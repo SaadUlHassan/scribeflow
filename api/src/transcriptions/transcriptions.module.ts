@@ -31,7 +31,7 @@ import { TranscriptionsService } from './transcriptions.service';
         fileFilter: (_req, file, cb) => {
           const rejection = validateUpload(file.originalname, file.mimetype);
           if (rejection) {
-            cb(new UnsupportedMediaTypeException(rejection.reason));
+            cb(new UnsupportedMediaTypeException(rejection.reason), false);
           } else {
             cb(null, true);
           }

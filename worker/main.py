@@ -2,13 +2,18 @@
 
 Pipeline per message: probe -> normalize -> transcribe -> save -> ack.
 Ack happens only after the result is durably committed to Postgres.
-M3 failure handling marks the job failed; retry/backoff lands in M4.
+
+Failure handling (see shared/message-schema.md): handled errors are retried
+via the TTL retry queue with an incrementing x-retry-count header, then
+parked in the dead-letter queue once retries are exhausted. Crash recovery
+needs no code: an unacked message is redelivered by the broker.
 """
 
 import asyncio
 import concurrent.futures
 import functools
 import json
+import signal
 import tempfile
 from pathlib import Path
 
@@ -19,12 +24,14 @@ import audio
 import transcriber
 from db import Database
 from log import configure_logging, get_logger
-from queue_topology import declare_topology
+from queue_topology import ROUTING_KEY_DEAD, ROUTING_KEY_RETRY, Topology, declare_topology
+from retry import Retry, decide
 from settings import Settings, load_settings
 
 logger = get_logger("worker")
 
 PROGRESS_REPORT_STEP = 0.1
+RETRY_COUNT_HEADER = "x-retry-count"
 
 
 async def connect_with_retry(settings: Settings) -> AbstractRobustConnection:
@@ -80,8 +87,56 @@ def make_progress_reporter(
     return report
 
 
+async def handle_failure(
+    message: AbstractIncomingMessage,
+    topology: Topology,
+    db: Database,
+    job_id: str,
+    error: str,
+) -> None:
+    """Route a handled failure: TTL retry queue while attempts remain, DLQ after."""
+    headers = dict(message.headers or {})
+    retry_count = int(headers.get(RETRY_COUNT_HEADER, 0))
+    decision = decide(retry_count)
+
+    try:
+        if isinstance(decision, Retry):
+            retry_message = aio_pika.Message(
+                body=message.body,
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                content_type="application/json",
+                expiration=decision.ttl_ms / 1000,  # aio-pika takes seconds
+                headers={**headers, RETRY_COUNT_HEADER: retry_count + 1},
+            )
+            await topology.exchange.publish(retry_message, routing_key=ROUTING_KEY_RETRY)
+            await db.record_retry(job_id, error)
+            logger.warning(
+                "scheduled retry %d/3 in %dms jobId=%s",
+                retry_count + 1,
+                decision.ttl_ms,
+                job_id,
+            )
+        else:
+            dead_message = aio_pika.Message(
+                body=message.body,
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                content_type="application/json",
+                headers=headers,
+            )
+            await topology.dlx_exchange.publish(dead_message, routing_key=ROUTING_KEY_DEAD)
+            await db.fail(job_id, error)
+            logger.error("retries exhausted, parked in DLQ jobId=%s", job_id)
+        await message.ack()
+    except Exception:
+        logger.exception("could not handle failure jobId=%s", job_id)
+        await message.nack(requeue=True)  # let redelivery retry the whole job
+
+
 async def handle_message(
-    message: AbstractIncomingMessage, db: Database, settings: Settings
+    message: AbstractIncomingMessage,
+    db: Database,
+    settings: Settings,
+    topology: Topology,
 ) -> None:
     try:
         payload = json.loads(message.body)
@@ -122,12 +177,7 @@ async def handle_message(
         )
     except Exception as exc:
         logger.error("job failed jobId=%s: %s", job_id, exc)
-        try:
-            await db.fail(job_id, str(exc))
-            await message.ack()
-        except Exception:
-            logger.exception("could not persist failure jobId=%s", job_id)
-            await message.nack(requeue=True)  # let redelivery retry the whole job
+        await handle_failure(message, topology, db, job_id, str(exc))
 
 
 async def run() -> None:
@@ -140,21 +190,45 @@ async def run() -> None:
             channel = await connection.channel()
             await channel.set_qos(prefetch_count=1)
             topology = await declare_topology(channel, settings)
-            logger.info("topology declared, consuming queue=%s", settings.jobs_queue)
 
-            handler = functools.partial(handle_message, db=db, settings=settings)
-            await topology.jobs_queue.consume(handler)
-            await asyncio.Future()  # run until cancelled
+            stop = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(sig, stop.set)
+
+            # Held while a job is in flight so shutdown can wait for it.
+            in_flight = asyncio.Lock()
+            base_handler = functools.partial(
+                handle_message, db=db, settings=settings, topology=topology
+            )
+
+            async def guarded_handler(message: AbstractIncomingMessage) -> None:
+                async with in_flight:
+                    await base_handler(message)
+
+            consumer_tag = await topology.jobs_queue.consume(guarded_handler)
+            logger.info("topology declared, consuming queue=%s", settings.jobs_queue)
+            await stop.wait()
+
+            logger.info("shutdown requested, cancelling consumer")
+            await topology.jobs_queue.cancel(consumer_tag)
+            try:
+                await asyncio.wait_for(
+                    in_flight.acquire(), timeout=settings.shutdown_grace_sec
+                )
+                logger.info("in-flight job finished, exiting cleanly")
+            except TimeoutError:
+                logger.warning(
+                    "in-flight job exceeded %.0fs grace; broker will redeliver",
+                    settings.shutdown_grace_sec,
+                )
     finally:
         await db.close()
 
 
 def main() -> None:
     configure_logging()
-    try:
-        asyncio.run(run())
-    except KeyboardInterrupt:
-        logger.info("shutdown requested, exiting")
+    asyncio.run(run())
 
 
 if __name__ == "__main__":

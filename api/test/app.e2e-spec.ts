@@ -1,15 +1,28 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { Test, TestingModule } from '@nestjs/testing';
+import { getDataSourceToken } from '@nestjs/typeorm';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { AppModule } from './../src/app.module';
+import { validateEnv } from './../src/config/env.validation';
+import { HealthController } from './../src/health/health.controller';
 
-describe('AppModule (e2e)', () => {
+// Hermetic e2e: health over real HTTP with a stubbed DataSource, no Postgres.
+describe('Health (e2e)', () => {
   let app: INestApplication<App>;
 
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
+      imports: [
+        ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
+      ],
+      controllers: [HealthController],
+      providers: [
+        {
+          provide: getDataSourceToken(),
+          useValue: { query: () => Promise.resolve([{ '?column?': 1 }]) },
+        },
+      ],
     }).compile();
 
     app = moduleFixture.createNestApplication();

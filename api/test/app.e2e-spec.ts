@@ -7,12 +7,6 @@ import { AppModule } from './../src/app.module';
 describe('AppModule (e2e)', () => {
   let app: INestApplication<App>;
 
-  beforeAll(() => {
-    process.env.API_KEY = 'test-key';
-    process.env.DATABASE_URL = 'postgres://test:test@localhost:5432/test';
-    process.env.RABBITMQ_URL = 'amqp://test:test@localhost:5672/';
-  });
-
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],

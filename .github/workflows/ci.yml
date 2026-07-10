@@ -21,6 +21,7 @@ jobs:
       - run: npm ci
       - run: npx eslint "{src,test}/**/*.ts"
       - run: npm test
+      - run: npm run test:e2e
 
   worker:
     runs-on: ubuntu-latest

@@ -3,3 +3,5 @@ __pycache__
 .ruff_cache
 .venv
 tests
+requirements-dev.txt
+pyproject.toml

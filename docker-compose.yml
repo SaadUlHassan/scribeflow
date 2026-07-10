@@ -39,7 +39,7 @@ services:
       RABBITMQ_URL: ${RABBITMQ_URL}
       AUDIO_DIR: ${AUDIO_DIR}
     ports:
-      - "3000:3000"
+      - "${PORT}:${PORT}"
     volumes:
       - audio_data:/data/audio
     depends_on:

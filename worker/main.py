@@ -24,7 +24,7 @@ async def connect_with_retry(settings: Settings) -> AbstractRobustConnection:
             connection = await aio_pika.connect_robust(settings.rabbitmq_url)
             logger.info("connected to rabbitmq attempt=%d", attempt)
             return connection
-        except Exception as exc:  # noqa: BLE001 - retry any connection failure
+        except Exception as exc:  # retry any connection failure
             last_error = exc
             logger.warning(
                 "rabbitmq not ready attempt=%d/%d: %s",

@@ -72,5 +72,24 @@ def normalize(src: str | Path, out_dir: Path) -> Path:
     return out_path
 
 
+def slice_wav(src: Path, start_sec: float, length_sec: float, index: int) -> Path:
+    """Cut one chunk out of a normalized WAV (written next to the source)."""
+    out_path = src.parent / f"chunk-{index:04d}.wav"
+    result = _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i", str(src),
+            "-ss", f"{start_sec}",
+            "-t", f"{length_sec}",
+            str(out_path),
+        ],
+        NORMALIZE_TIMEOUT_SEC,
+    )
+    if result.returncode != 0:
+        raise AudioProcessingError(f"ffmpeg chunking failed: {_tail(result.stderr)}")
+    return out_path
+
+
 def _tail(stderr: str) -> str:
     return stderr.strip()[-STDERR_TAIL_CHARS:]

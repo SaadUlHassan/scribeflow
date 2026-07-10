@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Controller,
   Get,
   HttpStatus,
@@ -28,7 +29,9 @@ import {
   toJobDetail,
   toJobSummary,
 } from './dto/job-response.dto';
+import { ExportQueryDto } from './dto/export-query.dto';
 import { ListQueryDto } from './dto/list-query.dto';
+import { toSrt, toVtt } from './srt.util';
 import { TranscriptionsService } from './transcriptions.service';
 
 @ApiTags('transcriptions')
@@ -71,6 +74,32 @@ export class TranscriptionsController {
   @ApiResponse({ status: 200, type: JobDetailDto })
   async get(@Param('id', ParseUUIDPipe) id: string): Promise<JobDetailDto> {
     return toJobDetail(await this.transcriptions.findById(id));
+  }
+
+  @Get(':id/export')
+  @ApiOperation({ summary: 'Export the transcript as SRT (default) or VTT' })
+  @ApiResponse({ status: 200, description: 'Subtitle file' })
+  @ApiResponse({ status: 409, description: 'Job is not completed yet' })
+  async export(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: ExportQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<string> {
+    const job = await this.transcriptions.findById(id);
+    if (job.status !== 'completed' || !job.transcript) {
+      throw new ConflictException(
+        `Job is ${job.status}; export requires a completed transcription`,
+      );
+    }
+    const segments = job.transcript.segments;
+    res.set({
+      'Content-Type':
+        query.format === 'vtt'
+          ? 'text/vtt; charset=utf-8'
+          : 'application/x-subrip; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${job.id}.${query.format}"`,
+    });
+    return query.format === 'vtt' ? toVtt(segments) : toSrt(segments);
   }
 
   @Get()

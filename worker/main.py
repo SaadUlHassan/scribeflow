@@ -65,7 +65,9 @@ def run_pipeline(
     audio.probe(file_path)  # reject files without a decodable audio stream early
     with tempfile.TemporaryDirectory(prefix="scribeflow-") as tmp_dir:
         wav_path = audio.normalize(file_path, Path(tmp_dir))
-        return transcriber.transcribe(wav_path, settings, on_progress=on_progress)
+        # Chunking decisions use the normalized file's actual duration.
+        duration = audio.probe(wav_path)
+        return transcriber.transcribe(wav_path, settings, duration, on_progress=on_progress)
 
 
 def make_progress_reporter(

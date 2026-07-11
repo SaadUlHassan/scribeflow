@@ -63,6 +63,11 @@ time the worker starts a job, including crash redeliveries).
 the message automatically. Processing is idempotent — a job whose status is
 already `completed` is acked and skipped on redelivery.
 
+**Poison messages** (unparseable JSON, non-UUID `jobId`, unknown job, corrupted
+`x-retry-count`) are parked in `transcription.dead` immediately — they are
+never retried. Transient infrastructure failures (database unreachable) are
+requeued with a short delay instead.
+
 **Known limitation:** per-message TTL on a single retry queue is subject to
 head-of-line blocking (a message behind a longer-TTL head expires late).
 Acceptable at this scale; a fixed-TTL-per-queue layout would remove it.

@@ -8,7 +8,6 @@ class Settings(BaseSettings):
 
     database_url: str
     rabbitmq_url: str
-    audio_dir: str = "/data/audio"
     whisper_model: str = "small"
     chunk_threshold_sec: int = 600
     chunk_sec: int = 300

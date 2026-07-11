@@ -9,7 +9,6 @@ def test_settings_load_from_env(monkeypatch):
 
     assert settings.database_url == "postgres://u:p@h:5432/db"
     assert settings.rabbitmq_url == "amqp://u:p@h:5672/"
-    assert settings.audio_dir == "/data/audio"
     assert settings.chunk_threshold_sec == 600
     assert settings.chunk_sec == 300
     assert settings.jobs_queue == "transcription.jobs"

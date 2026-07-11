@@ -66,6 +66,16 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  web:
+    build: ./web
+    environment:
+      API_URL: http://api:3000
+      API_KEY: ${API_KEY}
+    ports:
+      - "3001:3000"
+    depends_on:
+      - api
+
 volumes:
   pg_data:
   audio_data:

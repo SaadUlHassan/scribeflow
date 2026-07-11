@@ -51,14 +51,20 @@ export default function Home() {
       if (!res.ok) {
         throw new Error(body.message ?? `Upload failed (${res.status})`);
       }
-      setJob({
-        id: body.id,
-        status: body.status,
-        originalName: file.name,
-        progress: 0,
-        durationSec: null,
-        language: null,
-      });
+      if (body.status === 'completed') {
+        // Deduplicated upload: the job already has a transcript — fetch it.
+        const full = await fetch(`/api/transcriptions/${body.id}`);
+        setJob((await full.json()) as Job);
+      } else {
+        setJob({
+          id: body.id,
+          status: body.status,
+          originalName: file.name,
+          progress: 0,
+          durationSec: null,
+          language: null,
+        });
+      }
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : String(err));
     } finally {

@@ -1,0 +1,2 @@
+Static assets for the web UI. Kept so the directory exists in fresh clones
+(the Dockerfile copies it into the runtime image).

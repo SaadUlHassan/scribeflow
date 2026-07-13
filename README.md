@@ -36,7 +36,7 @@ First build downloads the whisper `small` model (~460 MB) into the worker image;
 | API | http://localhost:3000 (Swagger UI at [/docs](http://localhost:3000/docs)) |
 | Web UI | http://localhost:3001 |
 | RabbitMQ management | http://localhost:15672 (credentials in `.env`) |
-| Postgres | localhost:5433 (host port; in-network `postgres:5432`) |
+| Postgres | localhost:5434 (host port; in-network `postgres:5432`) |
 
 ### Try it
 

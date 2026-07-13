@@ -21,6 +21,65 @@ flowchart LR
 
 Job state lives in **Postgres, not RabbitMQ** — messages are transient work signals; the `jobs` table is the source of truth.
 
+### Request lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client / Web UI
+    participant A as NestJS API
+    participant P as Postgres
+    participant Q as RabbitMQ
+    participant W as Python worker
+
+    C->>A: POST /v1/transcriptions (multipart, X-API-Key)
+    A->>A: validate type/size, stream to tmp on shared volume
+    A->>A: sha256 (streamed read of the temp file)
+    A->>P: look up completed job with same content_hash
+    alt duplicate of a completed job
+        A-->>C: 200 (id, status completed) — temp file removed
+    else new content
+        A->>A: rename to /data/audio/jobId.ext
+        A->>P: INSERT jobs row (status queued)
+        A->>Q: publish (jobId, filePath, attempt 0) — persistent, confirmed
+        A-->>C: 202 (id, status queued)
+    end
+
+    Q->>W: deliver (prefetch 1, manual ack)
+    W->>P: SELECT status — ack and skip if already completed
+    W->>P: UPDATE status processing, attempts +1, progress 0
+    W->>W: ffprobe validate, ffmpeg normalize to 16 kHz mono WAV
+    W->>W: faster-whisper transcribe (VAD on, chunked when over 600 s)
+    W-)P: throttled progress updates (guarded by status = processing)
+    W->>P: UPDATE transcript JSONB, status completed, progress 1
+    W->>Q: ack — only after the commit above
+
+    note over C,A: polling starts right after the 202 — drawn last for readability
+    loop every 2 s until completed or failed
+        C->>A: GET /v1/transcriptions/:id
+        A->>P: SELECT job (the API never reads the queue)
+        A-->>C: status + progress (+ transcript when completed)
+    end
+```
+
+### Job state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: upload accepted, row inserted
+    queued --> processing: worker starts an attempt (attempts +1, progress reset)
+    processing --> completed: transcript committed, message acked
+    processing --> queued: handled failure, retries left (waits 10/30/90 s in retry queue)
+    processing --> failed: retries exhausted (3), message parked in DLQ
+    processing --> processing: worker crash, broker redelivers (no ack was sent)
+    completed --> [*]
+    failed --> [*]
+    note right of completed
+        Terminal. A redelivered message for a
+        completed job is acked and skipped (idempotency).
+    end note
+```
+
 ## Quickstart
 
 ```bash
@@ -119,7 +178,20 @@ The queue contract between API and worker is documented in [shared/message-schem
 
 **Why faster-whisper.** Open-source and fully local (a hard constraint here), native per-segment timestamps (no post-hoc alignment), and CTranslate2 int8 inference runs near real-time on CPU — `small` transcribed 31 s of speech in ~20 s in these tests. Model size is env-configurable (`WHISPER_MODEL`).
 
-**How chunking + timestamp offsetting works.** Files longer than `CHUNK_THRESHOLD_SEC` (600) are split into `CHUNK_SEC` (300) pieces from the *normalized* WAV. Chunks are transcribed sequentially; each chunk's segment timestamps are shifted by the chunk's start offset, then all segments are renumbered globally. The math lives in pure functions (`plan_chunks`, `offset_segments`, `merge_chunks`) with dedicated tests — an 11-minute file produced 208 segments with monotonic timestamps across both chunk boundaries. Progress is reported as `(chunks_done + within-chunk fraction) / total`. Cuts are fixed-boundary; whisper's VAD absorbs most mid-word seams (see Limitations).
+**How chunking + timestamp offsetting works.** Files longer than `CHUNK_THRESHOLD_SEC` (600) are split into `CHUNK_SEC` (300) pieces from the *normalized* WAV. Chunks are transcribed sequentially; each chunk's segment timestamps are shifted by the chunk's start offset, then all segments are renumbered globally. Real numbers from an 11-minute test file:
+
+```text
+normalized WAV, 657.4 s        (threshold 600 s exceeded → 300 s chunks)
+├── chunk 0  [   0 – 300   ]  →  77 segments, timestamps already global
+├── chunk 1  [ 300 – 600   ]  → 121 segments, offset each by +300 s
+└── chunk 2  [ 600 – 657.4 ]  →  10 segments, offset each by +600 s
+
+chunk 1's first raw segment   (0.0 s → 3.0 s)
+   after offset_segments(+300)  (300.0 s → 303.0 s)
+merge_chunks → renumber ids 0…207 → one monotonic global timeline
+```
+
+The math lives in pure functions (`plan_chunks`, `offset_segments`, `merge_chunks`) with dedicated tests — the file above produced monotonic timestamps across both chunk boundaries. Progress is reported as `(chunks_done + within-chunk fraction) / total`. Cuts are fixed-boundary; whisper's VAD absorbs most mid-word seams (see Limitations).
 
 **Why job state lives in Postgres, not the broker.** Messages get redelivered, expired, dead-lettered, and duplicated — none of that may corrupt what a client sees. The API reads only Postgres; the queue is a work signal. This also makes idempotency trivial: a redelivered message for a `completed` job is acked and skipped.
 

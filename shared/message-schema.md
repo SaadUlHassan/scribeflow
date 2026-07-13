@@ -71,3 +71,21 @@ requeued with a short delay instead.
 **Known limitation:** per-message TTL on a single retry queue is subject to
 head-of-line blocking (a message behind a longer-TTL head expires late).
 Acceptable at this scale; a fixed-TTL-per-queue layout would remove it.
+
+## Message journey on failure
+
+```mermaid
+flowchart TD
+    API[API publisher] -->|"exchange scribeflow, rk job"| JOBS[(transcription.jobs)]
+    JOBS -->|"deliver: prefetch 1, manual ack"| W{worker}
+    W -->|"success: ack after Postgres commit"| DONE([message gone])
+    W -->|"handled failure, x-retry-count 0..2: copy published with TTL 10/30/90 s and header +1, original acked"| RETRY[(transcription.retry)]
+    RETRY -->|"TTL expires: dead-letters back via scribeflow rk job"| JOBS
+    W -->|"handled failure, x-retry-count 3: copy parked, job status failed"| DEAD[(transcription.dead)]
+    W -->|"poison - bad JSON, non-UUID or unknown jobId: nack requeue false, routed via scribeflow.dlx rk dead"| DEAD
+    W -->|"transient DB error: 5 s pause, nack requeue true"| JOBS
+    W -.->|"crash, no ack sent: broker redelivers"| JOBS
+```
+
+Solid lines are explicit worker actions; the dashed line is the broker-driven
+crash-recovery path that needs no application code.
